@@ -1,0 +1,754 @@
+<div style="font-family:Georgia,serif;max-width:860px;margin:0 auto;color:#333;line-height:1.7;">
+
+<p>I&#8217;ve been running <a href="https://www.tjmaher.com">Adventures in Automation</a>
+since 2015. Over those eleven years, the blog accumulated roughly 11,000 comments. Most
+of them are spam. The Blogger web UI has no bulk-delete feature. You delete them one at
+a time, which is not a thing I was willing to do 11,000 times.</p>
+
+<p>So I did what any self-respecting automation engineer would do when facing a tedious
+manual task: I automated it.</p>
+
+<p>The tool I reached for was <a href="https://claude.ai">Claude</a> (claude.ai),
+Anthropic&#8217;s AI assistant. I&#8217;ve been using Claude as a research assistant and
+pair programmer for a few months now &mdash; you can see the results in the
+<a href="https://www.tjmaher.com/p/programming-projects.html">Claude Sonnet series on
+my Programming Projects page</a>. This time, I gave it a practical problem: write a
+Python script that connects to the
+<a href="https://developers.google.com/blogger/docs/3.0/reference">Blogger API v3</a>,
+walks every post on my blog, fetches every comment, and deletes each one.</p>
+
+<p>What followed was a back-and-forth debugging session that I think is worth documenting.
+Claude wrote the initial script. I ran it. I pasted the errors back into the chat. Claude
+fixed them. We went through three rounds of that before it ran cleanly. The errors along
+the way &mdash; a missing file path, a lowercase status value the API rejected, a
+per-minute rate limit that fired on list calls, not just deletes &mdash; are exactly the
+kind of thing you only find out by running the code. This post documents all of it,
+including the setup, the mistakes, and the final working version.</p>
+
+<p>If you want to skip straight to the code, the GitHub repository is at
+<a href="https://github.com/tjmaher">github.com/tjmaher</a>. If you want to understand
+why each piece is there, read on.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">About Me</h2>
+
+<p>I&#8217;m <strong>T.J. Maher</strong> (Thomas F. Maher Jr.), an SDET and QA Automation
+Engineer based in Bridgewater, MA. I started in manual QA back in 1996, shifted into
+automation in 2015, and have been writing about the transition on this blog ever since.
+My day-to-day stack is TypeScript, Playwright, and Detox for React Native mobile
+automation. I created the Test Automation University course
+<a href="https://testautomationu.applitools.com/capybara-ruby/">Introduction to Capybara</a>
+and contributed a chapter to
+<a href="https://www.amazon.com/dp/1789953847">Continuous Testing for DevOps Professionals</a>
+(Packt, 2019). I&#8217;m currently #OpenToWork, looking for remote or Boston-area hybrid
+SDET roles.</p>
+
+<ul>
+  <li><strong>Blog:</strong> <a href="https://www.tjmaher.com">tjmaher.com</a></li>
+  <li><strong>LinkedIn:</strong> <a href="https://www.linkedin.com/in/tjmaher1">linkedin.com/in/tjmaher1</a></li>
+  <li><strong>GitHub:</strong> <a href="https://github.com/tjmaher">github.com/tjmaher</a></li>
+  <li><strong>BlueSky:</strong> <a href="https://bsky.app/profile/tjmaher1.bsky.social">@tjmaher1</a></li>
+</ul>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">About Claude</h2>
+
+<p><a href="https://claude.ai">Claude</a> is an AI assistant made by
+<a href="https://www.anthropic.com">Anthropic</a>. I&#8217;ve been using it as a
+pair-programming partner and research assistant for the
+<a href="https://www.tjmaher.com/p/programming-projects.html">Becoming AI QA series</a>
+on this blog. My workflow is simple: I describe what I need, Claude drafts the code,
+I run it, I paste the errors back in, and Claude revises. It&#8217;s faster than
+searching Stack Overflow for every error message, and it produces code that is at least
+explainable, even when it isn&#8217;t immediately correct. This project is a good
+example of that workflow in action.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Prerequisites</h2>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">1. Python</h3>
+<p>Python 3.8 or later. I tested this on Python 3.14 on Windows.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">2. Dependencies</h3>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib python-dotenv</pre>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">3. Google Cloud Project</h3>
+<ol>
+  <li>Go to the <a href="https://console.cloud.google.com">Google Cloud Console</a>
+      and create a new project (or reuse an existing one).</li>
+  <li>Enable the <strong>Blogger API v3</strong>:
+      <a href="https://console.cloud.google.com/apis/library/blogger.googleapis.com">
+      console.cloud.google.com/apis/library/blogger.googleapis.com</a></li>
+</ol>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">4. OAuth 2.0 Credentials</h3>
+<ol>
+  <li>Navigate to <strong>APIs &amp; Services &gt; Credentials</strong>.</li>
+  <li>Click <strong>+ Create Credentials &gt; OAuth 2.0 Client ID</strong>.</li>
+  <li>Choose <strong>Desktop app</strong> as the application type.</li>
+  <li>Download the generated JSON file and rename it to <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">client_secrets.json</code>.</li>
+  <li>Place <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">client_secrets.json</code> in the same directory as the script.</li>
+</ol>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">5. OAuth Consent Screen</h3>
+<p>Configure the consent screen at <strong>APIs &amp; Services &gt; OAuth consent screen</strong>:</p>
+
+<table style="border-collapse:collapse;width:100%;margin:12px 0;">
+  <tr><th style="background:#1e1e2e;color:#cdd6f4;padding:8px 12px;text-align:left;border:1px solid #ccc;">Field</th><th style="background:#1e1e2e;color:#cdd6f4;padding:8px 12px;text-align:left;border:1px solid #ccc;">Value</th></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">User type</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">External</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">App name</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;font-family:'Courier New',Courier,monospace;font-size:0.85em;">Blogger Comment Deleter</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">User support email</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">your Gmail address</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">App domain</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">your blog URL</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Developer contact email</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">your Gmail address</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Scopes</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;font-family:'Courier New',Courier,monospace;font-size:0.85em;">https://www.googleapis.com/auth/blogger</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Test users</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">your Gmail address</td></tr>
+  <tr><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Publishing status</td><td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Testing (no verification needed)</td></tr>
+</table>
+
+<p>Leave the app in <strong>Testing</strong> status. Google verification is only required
+when the app will be used by people outside the test users list. Since you are the only
+one running this script, Testing is sufficient indefinitely.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">6. Your Blog ID</h3>
+<p>Create an API key at <strong>APIs &amp; Services &gt; Credentials &gt; + Create Credentials &gt; API key</strong>.
+Restrict it to the Blogger API v3 only. Then call this URL in your browser:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">https://www.googleapis.com/blogger/v3/blogs/byurl?url=https://YOUR-BLOG-URL&amp;key=YOUR_API_KEY</pre>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">id</code> field in the returned JSON is your Blog ID. You will store it in your
+<code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> file in the next step.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Keeping Secrets Out of GitHub</h2>
+
+<blockquote style="border-left:4px solid #89b4fa;background:#f4f8ff;color:#444;margin:16px 0;padding:12px 16px;border-radius:0 6px 6px 0;">
+  <strong>Why this matters:</strong> Credentials committed to a public GitHub repository
+  are exposed to anyone on the internet. Automated bots scan GitHub continuously for
+  API keys, OAuth secrets, and tokens. A leaked credential can be used to make API calls
+  on your behalf, exhaust your quotas, or access your account data. GitHub&#8217;s own
+  documentation warns that
+  <a href="https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning">once
+  a secret is pushed, it should be considered compromised</a>, even if you delete it
+  immediately, because the git history retains it.
+</blockquote>
+
+<p>This project uses three files that must never be committed:</p>
+
+<table style="border-collapse:collapse;width:100%;margin:12px 0;">
+  <tr><th style="background:#1e1e2e;color:#cdd6f4;padding:8px 12px;text-align:left;border:1px solid #ccc;">File</th><th style="background:#1e1e2e;color:#cdd6f4;padding:8px 12px;text-align:left;border:1px solid #ccc;">Why it is sensitive</th></tr>
+  <tr>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;font-family:'Courier New',Courier,monospace;font-size:0.85em;">client_secrets.json</td>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Contains your OAuth client ID and client secret, downloaded from Google Cloud Console.
+    Anyone with this file can impersonate your application.</td>
+  </tr>
+  <tr>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;font-family:'Courier New',Courier,monospace;font-size:0.85em;">token.json</td>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Written automatically after first authentication. Contains your OAuth access and
+    refresh tokens, which grant direct access to your Blogger account.</td>
+  </tr>
+  <tr>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;font-family:'Courier New',Courier,monospace;font-size:0.85em;">.env</td>
+    <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">Contains your Blog ID and file paths. Less sensitive than the above, but keeping
+    all configuration out of source control is the correct habit.</td>
+  </tr>
+</table>
+
+<p>The industry standard approach for managing this kind of configuration is the
+<strong>twelve-factor app</strong> methodology, which states that
+<a href="https://12factor.net/config">config should be stored in the environment</a>,
+strictly separated from code. The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">python-dotenv</code> library
+(<a href="https://pypi.org/project/python-dotenv/">pypi.org/project/python-dotenv</a>)
+implements this pattern for local development by loading values from a <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> file
+into environment variables at runtime.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Step 1 &#8212; Create a <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> file</h3>
+<p>In the same folder as the script, create a file named <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code>:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">BLOG_ID=your_blog_id_here
+CLIENT_SECRETS_FILE=client_secrets.json</pre>
+<p>No quotes around the values. No spaces around the <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">=</code> sign.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Step 2 &#8212; Create a <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code> file</h3>
+<p>In the same folder, create a file named <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code>:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">.env
+client_secrets.json
+token.json</pre>
+<p>Git reads <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code> before staging files and silently excludes anything listed
+there. GitHub maintains a
+<a href="https://github.com/github/gitignore">collection of recommended .gitignore templates</a>
+for common languages. The
+<a href="https://github.com/github/gitignore/blob/main/Python.gitignore">Python template</a>
+is a useful starting point for any Python project.</p>
+
+<blockquote style="border-left:4px solid #89b4fa;background:#f4f8ff;color:#444;margin:16px 0;padding:12px 16px;border-radius:0 6px 6px 0;">
+  <strong>Before your first commit</strong>, run <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">git status</code> and confirm that
+  <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code>, <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">client_secrets.json</code>, and <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code> do not appear in the
+  list of files to be staged. If they do appear, your <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code> is not in the
+  right place or has a typo.
+</blockquote>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Step 3 &#8212; Create a <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env.example</code> file</h3>
+<p>This file is safe to commit. It tells anyone who clones the repository which values
+they need to supply, without exposing yours:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">BLOG_ID=your_blog_id_here
+CLIENT_SECRETS_FILE=client_secrets.json</pre>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env.example</code> convention is documented in the
+<a href="https://saurabh-kumar.com/python-dotenv/#file-format">python-dotenv documentation</a>
+and serves as both a template and a record of required configuration.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Step 4 &#8212; Update the script</h3>
+<p>The script reads from the <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> file using <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">python-dotenv</code>. The relevant
+block near the top of <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">delete_blogger_comments.py</code> looks like this:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">from dotenv import load_dotenv
+
+load_dotenv()
+
+YOUR_BLOG_ID        = os.getenv(&quot;BLOG_ID&quot;, &quot;&quot;)
+CLIENT_SECRETS_FILE = os.getenv(&quot;CLIENT_SECRETS_FILE&quot;, &quot;client_secrets.json&quot;)
+TOKEN_FILE          = &quot;token.json&quot;</pre>
+<p><code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">load_dotenv()</code> reads the <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> file and populates <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">os.environ</code> with its values.
+<code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">os.getenv()</code> then reads those values by name. The second argument is a fallback default
+used if the variable is not set. See the
+<a href="https://docs.python.org/3/library/os.html#os.getenv">os.getenv documentation</a>
+for the full signature.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">First Run &#8212; Authentication</h2>
+
+<p>The first time the script runs it opens a browser window to Google&#8217;s login page.
+After you log in and grant the Blogger scope, Google redirects back to the local server
+the script is running and you will see:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">The authentication flow has completed. You may close this window.</pre>
+<p>Close that browser tab. The script writes your credentials to <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code> and proceeds.
+Every subsequent run reads <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code> directly and skips the browser step unless the
+token has expired.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Usage</h2>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Dry run (recommended first step)</h3>
+<p>Prints every comment that would be deleted. Touches nothing.</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">python delete_blogger_comments.py --dry-run</pre>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Live run</h3>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">python delete_blogger_comments.py</pre>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Live run with a longer delay between deletions</h3>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">python delete_blogger_comments.py --delay 2.0</pre>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">--delay</code> value is the number of seconds to sleep between each <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">DELETE</code>
+request. The default is <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">0.5</code>. A longer delay reduces the chance of hitting per-minute
+quota limits during large runs.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Rate Limits</h2>
+
+<p>The Blogger API v3 has two quota constraints to be aware of.</p>
+
+<p><strong>Per-minute limit</strong> applies to all API calls including list operations.
+The script handles this automatically: every list call has a 0.5-second pause after
+it completes, and both list and delete operations use exponential backoff
+(5s, 10s, 20s&#8230; up to 120s) with up to 6 retries on HTTP 429 and 5xx responses.
+See <a href="https://developers.google.com/analytics/devguides/reporting/core/v3/errors#backoff">Google&#8217;s
+exponential backoff guidance</a> for the underlying pattern.</p>
+
+<p><strong>Daily quota</strong> is 10,000 units per day by default. Each <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">DELETE</code> costs
+50 units, which allows roughly 200 deletions per day on the default quota. At that rate,
+11,000 comments would take approximately 55 days. To avoid this, request a quota
+increase at
+<a href="https://console.cloud.google.com/iam-admin/quotas">console.cloud.google.com &gt; APIs &amp; Services &gt; Blogger API v3 &gt; Quotas</a>.
+With an approved higher quota and the default 0.5-second delay, a full 11,000-comment
+run completes in well under an hour.</p>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Expected Output</h2>
+
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">=== Blogger Comment Deletion [DRY RUN] ===
+Blog ID : 3868566217808655382
+Delay   : 0.5s between deletes
+
+  [WOULD DELETE] Post: &#x27;Some post title&#x27;   | Comment #12345 by SomeUser (2021-03-15)
+  [WOULD DELETE] Post: &#x27;Some post title&#x27;   | Comment #12346 by AnotherUser (2021-03-16)
+  -&gt; Post 2702750598806372610: 2 comment(s) processed.
+
+=== Summary ===
+Posts scanned    : 847
+Comments found   : 11243
+No comments were deleted (dry-run mode).</pre>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">File Layout</h2>
+
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">Blogger comment deleter/
+    delete_blogger_comments.py   ✅ commit this
+    README.md                    ✅ commit this
+    .gitignore                   ✅ commit this
+    .env.example                 ✅ commit this
+    .env                         🚫 never commit (listed in .gitignore)
+    client_secrets.json          🚫 never commit (listed in .gitignore)
+    token.json                   🚫 never commit (listed in .gitignore)</pre>
+
+<hr/>
+
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">The Full Script</h2>
+
+<p>The complete <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">delete_blogger_comments.py</code> is below. The GitHub repository at
+<a href="https://github.com/tjmaher">github.com/tjmaher</a> contains the final version
+including the <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">python-dotenv</code> integration.</p>
+
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">&quot;&quot;&quot;
+delete_blogger_comments.py
+--------------------------
+Deletes every comment on a Blogger blog via the Blogger API v3.
+
+PREREQUISITES
+-------------
+1. Install dependencies:
+       pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+2. Create a Google Cloud project and enable the Blogger API v3:
+       https://console.cloud.google.com/apis/library/blogger.googleapis.com
+
+3. Create OAuth 2.0 credentials (Desktop app type) and download the JSON file.
+   Rename it to:  client_secrets.json
+   Place it in the same directory as this script.
+
+4. Set YOUR_BLOG_ID below.
+   To find your Blog ID, visit:
+       https://www.googleapis.com/blogger/v3/blogs/byurl?url=https://www.tjmaher.com&amp;key=YOUR_API_KEY
+
+RATE LIMIT WARNING
+------------------
+The default Blogger API quota is 10,000 units/day.
+Each DELETE costs 50 units  =&gt;  max ~200 deletions/day on the default quota.
+With 11,000 comments you need to either:
+  a) Request a quota increase at console.cloud.google.com &gt; APIs &gt; Quotas, OR
+  b) Run the script over multiple days (it picks up where it left off).
+
+USAGE
+-----
+Dry run (prints what would be deleted, touches nothing):
+    python delete_blogger_comments.py --dry-run
+
+Live run:
+    python delete_blogger_comments.py
+
+Live run, slower pace (2-second delay between deletions):
+    python delete_blogger_comments.py --delay 2.0
+&quot;&quot;&quot;
+
+import argparse
+import time
+import sys
+import os
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# ── CONFIGURE THIS ────────────────────────────────────────────────────────────
+YOUR_BLOG_ID = &quot;3868566217808655382&quot;
+CLIENT_SECRETS_FILE = &quot;client_secrets.json&quot;
+TOKEN_FILE = &quot;token.json&quot;
+# ─────────────────────────────────────────────────────────────────────────────
+
+SCOPES = [&quot;https://www.googleapis.com/auth/blogger&quot;]
+
+
+def get_credentials():
+    &quot;&quot;&quot;Returns valid OAuth2 credentials, refreshing or prompting as needed.&quot;&quot;&quot;
+    creds = None
+
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE, SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+
+        with open(TOKEN_FILE, &quot;w&quot;) as token:
+            token.write(creds.to_json())
+
+    return creds
+
+
+def api_call_with_retry(request):
+    &quot;&quot;&quot;Execute a Google API request with exponential backoff on 429/5xx errors.&quot;&quot;&quot;
+    backoff = 5
+    for attempt in range(6):
+        try:
+            result = request.execute()
+            time.sleep(0.5)   # polite pause after every successful list call
+            return result
+        except HttpError as e:
+            if e.resp.status in (429, 500, 503):
+                print(
+                    f&quot;    [WARN] HTTP {e.resp.status} - waiting {backoff}s &quot;
+                    f&quot;before retry (attempt {attempt + 1}/6)...&quot;
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120)
+            else:
+                raise
+    raise RuntimeError(&quot;API call failed after 6 retries.&quot;)
+
+
+def list_all_posts(service, blog_id):
+    &quot;&quot;&quot;Generator: yields every post dict for the given blog.&quot;&quot;&quot;
+    page_token = None
+    while True:
+        resp = api_call_with_retry(
+            service.posts().list(
+                blogId=blog_id,
+                pageToken=page_token,
+                maxResults=500,
+                fields=&quot;items(id,title),nextPageToken&quot;,
+                status=&quot;LIVE&quot;,
+            )
+        )
+        for post in resp.get(&quot;items&quot;, []):
+            yield post
+        page_token = resp.get(&quot;nextPageToken&quot;)
+        if not page_token:
+            break
+
+
+def list_all_comments(service, blog_id, post_id):
+    &quot;&quot;&quot;Generator: yields every comment dict for a given post.&quot;&quot;&quot;
+    page_token = None
+    while True:
+        resp = api_call_with_retry(
+            service.comments().list(
+                blogId=blog_id,
+                postId=post_id,
+                pageToken=page_token,
+                maxResults=500,
+                fields=&quot;items(id,author/displayName,published),nextPageToken&quot;,
+                status=&quot;LIVE&quot;,
+            )
+        )
+        for comment in resp.get(&quot;items&quot;, []):
+            yield comment
+        page_token = resp.get(&quot;nextPageToken&quot;)
+        if not page_token:
+            break
+
+
+def delete_comment(service, blog_id, post_id, comment_id, dry_run, delay):
+    &quot;&quot;&quot;Deletes a single comment, or logs the action when in dry-run mode.&quot;&quot;&quot;
+    if dry_run:
+        return
+    backoff = 60
+    for attempt in range(6):
+        try:
+            service.comments().delete(
+                blogId=blog_id,
+                postId=post_id,
+                commentId=comment_id,
+            ).execute()
+            time.sleep(delay)
+            return
+        except HttpError as e:
+            if e.resp.status == 404:
+                return  # already gone
+            elif e.resp.status in (429, 500, 503):
+                print(
+                    f&quot;    [WARN] HTTP {e.resp.status} on delete - waiting {backoff}s &quot;
+                    f&quot;(attempt {attempt + 1}/6)...&quot;
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 300)
+            else:
+                raise
+    raise RuntimeError(f&quot;Failed to delete comment {comment_id} after 6 retries.&quot;)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=&quot;Delete all comments from a Blogger blog.&quot;
+    )
+    parser.add_argument(
+        &quot;--dry-run&quot;,
+        action=&quot;store_true&quot;,
+        help=&quot;List comments that would be deleted without touching anything.&quot;,
+    )
+    parser.add_argument(
+        &quot;--delay&quot;,
+        type=float,
+        default=0.5,
+        help=&quot;Seconds to sleep between each DELETE request (default: 0.5).&quot;,
+    )
+    args = parser.parse_args()
+
+    if YOUR_BLOG_ID == &quot;PASTE_YOUR_BLOG_ID_HERE&quot;:
+        print(&quot;ERROR: Set YOUR_BLOG_ID in the script before running.&quot;)
+        sys.exit(1)
+
+    creds = get_credentials()
+    service = build(&quot;blogger&quot;, &quot;v3&quot;, credentials=creds)
+
+    mode_label = &quot;DRY RUN&quot; if args.dry_run else &quot;LIVE&quot;
+    print(f&quot;\n=== Blogger Comment Deletion [{mode_label}] ===&quot;)
+    print(f&quot;Blog ID : {YOUR_BLOG_ID}&quot;)
+    print(f&quot;Delay   : {args.delay}s between deletes\n&quot;)
+
+    total_posts = 0
+    total_comments = 0
+    deleted = 0
+
+    try:
+        for post in list_all_posts(service, YOUR_BLOG_ID):
+            total_posts += 1
+            post_id = post[&quot;id&quot;]
+            post_title = post.get(&quot;title&quot;, &quot;(no title)&quot;)
+            post_comment_count = 0
+
+            for comment in list_all_comments(service, YOUR_BLOG_ID, post_id):
+                total_comments += 1
+                post_comment_count += 1
+                author = comment.get(&quot;author&quot;, {}).get(&quot;displayName&quot;, &quot;unknown&quot;)
+                cid = comment[&quot;id&quot;]
+                pub = comment.get(&quot;published&quot;, &quot;&quot;)[:10]
+
+                action = &quot;WOULD DELETE&quot; if args.dry_run else &quot;DELETING&quot;
+                print(
+                    f&quot;  [{action}] Post: {post_title[:50]!r:52} &quot;
+                    f&quot;| Comment #{cid} by {author[:20]} ({pub})&quot;
+                )
+
+                delete_comment(
+                    service,
+                    YOUR_BLOG_ID,
+                    post_id,
+                    cid,
+                    dry_run=args.dry_run,
+                    delay=args.delay,
+                )
+                if not args.dry_run:
+                    deleted += 1
+
+            if post_comment_count:
+                print(
+                    f&quot;  -&gt; Post {post_id}: {post_comment_count} comment(s) processed.\n&quot;
+                )
+
+    except KeyboardInterrupt:
+        print(&quot;\n\nInterrupted by user.&quot;)
+
+    print(&quot;\n=== Summary ===&quot;)
+    print(f&quot;Posts scanned    : {total_posts}&quot;)
+    print(f&quot;Comments found   : {total_comments}&quot;)
+    if not args.dry_run:
+        print(f&quot;Comments deleted : {deleted}&quot;)
+    else:
+        print(&quot;No comments were deleted (dry-run mode).&quot;)
+    print()
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</pre>
+
+<hr/>
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Understanding the Code</h2>
+
+<p>Looking at <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">delete_blogger_comments.py</code>, this script is a practical automation tool that solves a real problem: bulk-deleting thousands of comments from a Blogger blog when the web interface only allows one-at-a-time deletion. Let me walk through what the code does, section by section, for someone new to Python.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">The Big Picture</h3>
+
+<p>This script connects to Google's Blogger API, walks through every post on a blog, finds all comments on each post, and deletes them. It's essentially automating what would take days of clicking "Delete" buttons manually.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Key Libraries and What They Do</h3>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">Authentication Libraries</h4>
+<p>The script uses Google's official authentication libraries:</p>
+
+<ul>
+  <li><strong><a href="https://google-auth.readthedocs.io/en/master/reference/google.oauth2.credentials.html">google.oauth2.credentials</a></strong> - Handles OAuth2 credentials that prove you're authorized to access the Blogger API</li>
+  <li><strong><a href="https://google-auth-oauthlib.readthedocs.io/en/latest/reference/google_auth_oauthlib.flow.html">google_auth_oauthlib.flow</a></strong> - Manages the OAuth flow for desktop applications (opens browser, handles the redirect back)</li>
+  <li><strong><a href="https://google-auth.readthedocs.io/en/master/reference/google.auth.transport.requests.html">google.auth.transport.requests</a></strong> - HTTP transport layer for refreshing expired tokens</li>
+</ul>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">API Client Libraries</h4>
+<ul>
+  <li><strong><a href="https://googleapis.github.io/google-api-python-client/docs/dyn/index.html">googleapiclient.discovery</a></strong> - The main interface for calling Google APIs. <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">build("blogger", "v3")</code> creates a client for Blogger API v3</li>
+  <li><strong><a href="https://googleapis.github.io/google-api-python-client/docs/epy/googleapiclient.errors-module.html">googleapiclient.errors</a></strong> - Error handling for API responses (rate limits, not found, server errors, etc.)</li>
+</ul>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">Environment Management</h4>
+<ul>
+  <li><strong><a href="https://pypi.org/project/python-dotenv/">python-dotenv</a></strong> - Loads configuration from <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> files, following the <a href="https://12factor.net/config">twelve-factor app methodology</a></li>
+</ul>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">How the Code Works</h3>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">1. Configuration Loading</h4>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">load_dotenv()
+YOUR_BLOG_ID = os.getenv("BLOG_ID")</pre>
+<p>The script reads sensitive configuration (like your blog ID) from environment variables, keeping secrets out of the source code. This is security best practice.</p>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">2. OAuth2 Authentication Flow</h4>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">get_credentials()</code> function implements the OAuth2 "installed application" flow:</p>
+<ul>
+  <li><strong>First run</strong>: Opens browser → you log in → Google redirects back → credentials saved to <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code></li>
+  <li><strong>Subsequent runs</strong>: Reads <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code> directly, refreshes if expired</li>
+</ul>
+<p>This follows Google's <a href="https://developers.google.com/identity/protocols/oauth2/native-app">OAuth2 for installed applications pattern</a>.</p>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">3. API Pagination Handling</h4>
+<p>Both <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">list_all_posts()</code> and <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">list_all_comments()</code> are <strong>generators</strong> that handle Google's pagination automatically:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">resp = service.posts().list(
+    blogId=blog_id,
+    pageToken=page_token,  # Continues from where last page ended
+    maxResults=500,        # Maximum allowed per request
+    status="LIVE"          # Only published posts
+).execute()</pre>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">pageToken</code> system lets you fetch large datasets in chunks. Each response includes a <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">nextPageToken</code> if there are more results.</p>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">4. Rate Limit Handling</h4>
+<p>The script includes defensive programming for API quotas:</p>
+<ul>
+  <li><strong>429 errors</strong>: Daily quota exceeded → exits gracefully with helpful message</li>
+  <li><strong>404 errors</strong>: Comment already deleted → treats as success</li>  
+  <li><strong>500/503 errors</strong>: Server problems → waits 60 seconds and retries once</li>
+</ul>
+<p>This handles the reality that APIs have limits and sometimes fail.</p>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">5. Dry Run Safety</h4>
+<p>The <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">--dry-run</code> flag lets you see what would be deleted without actually deleting anything:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">action = "WOULD DELETE" if args.dry_run else "DELETING"</pre>
+<p>This is crucial when you're about to delete 11,000 comments - you want to verify the scope first.</p>
+
+<h4 style="color:#1e1e2e;margin-top:18px;">6. Progress Tracking</h4>
+<p>The script provides real-time feedback:</p>
+<pre style="background:#1e1e2e;color:#cdd6f4;font-family:'Courier New',Courier,monospace;font-size:0.85em;line-height:1.6;padding:16px;border-radius:6px;overflow-x:auto;display:block;white-space:pre;margin:12px 0;">print(f"[{action}] Post: {post_title[:50]!r:52} | Comment #{cid} by {author[:20]} ({pub})")</pre>
+<p>You see each comment being processed, which post it belongs to, who wrote it, and when.</p>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Why This Approach Works</h3>
+
+<p>This script demonstrates several Python and API best practices:</p>
+
+<ul>
+  <li><strong>Security</strong>: Credentials in environment variables, not source code</li>
+  <li><strong>Robustness</strong>: Handles rate limits, network errors, and edge cases</li>
+  <li><strong>Safety</strong>: Dry-run mode prevents accidents</li>
+  <li><strong>Transparency</strong>: Shows exactly what it's doing in real-time</li>
+  <li><strong>Resumability</strong>: If quota runs out, just run again tomorrow - it picks up where it left off</li>
+</ul>
+
+<p>The combination of Google's well-documented APIs, Python's excellent HTTP libraries, and defensive programming creates a tool that's both powerful and safe to use. It's the kind of automation that saves hours of manual work while being reliable enough to trust with bulk operations.</p>
+
+<p>For someone new to Python, this script showcases how modern Python development works: leveraging well-maintained libraries, following security best practices, and building in safety mechanisms from the start.</p>
+
+<hr/>
+<h2 style="color:#1e1e2e;border-bottom:2px solid #89b4fa;padding-bottom:6px;margin-top:36px;">Further Reading</h2>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Environment Variables and <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.env</code> Files</h3>
+<ul>
+  <li><a href="https://saurabh-kumar.com/python-dotenv/">python-dotenv &#8212; Official Docs</a> &#8212;
+      The authoritative reference for <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">load_dotenv()</code>, file format rules, variable expansion,
+      and the CLI interface.</li>
+  <li><a href="https://github.com/theskumar/python-dotenv">python-dotenv &#8212; GitHub Repository</a> &#8212;
+      Source code, issue tracker, and the most current usage examples including
+      recommended <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code> guidance.</li>
+  <li><a href="https://pypi.org/project/python-dotenv/">python-dotenv &#8212; PyPI</a> &#8212;
+      Install page with version history and dependency information.</li>
+  <li><a href="https://12factor.net/config">The Twelve-Factor App: Config</a> &#8212;
+      The methodology that established storing config in the environment as a best
+      practice. Written by Heroku engineers in 2011.</li>
+  <li><a href="https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning">GitHub Secret Scanning: About Secret Scanning</a> &#8212;
+      GitHub&#8217;s official explanation of why committed secrets must be treated as
+      permanently compromised, even after deletion.</li>
+  <li><a href="https://github.com/github/gitignore">GitHub: gitignore templates</a> &#8212;
+      The official collection of <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">.gitignore</code> templates. The
+      <a href="https://github.com/github/gitignore/blob/main/Python.gitignore">Python template</a>
+      covers virtual environments, build artifacts, and local config files.</li>
+</ul>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Blogger API v3</h3>
+<ul>
+  <li><a href="https://developers.google.com/blogger">Blogger API v3 &#8212; Introduction</a> &#8212;
+      Overview of what the API can do and links to getting started materials.</li>
+  <li><a href="https://developers.google.com/blogger/docs/3.0/getting_started">Blogger API v3 &#8212; Getting Started</a> &#8212;
+      Covers the five core resource types (Blogs, Posts, Comments, Pages, Users),
+      supported operations, and URI structure.</li>
+  <li><a href="https://developers.google.com/blogger/docs/3.0/using">Blogger API v3 &#8212; Using the API</a> &#8212;
+      Practical guide to making requests, authenticating, and working with collections.</li>
+  <li><a href="https://developers.google.com/blogger/docs/3.0/reference/">Blogger API v3 &#8212; Reference</a> &#8212;
+      Full reference for all resource types and methods.</li>
+  <li><a href="https://developers.google.com/blogger/docs/3.0/reference/comments/delete">Blogger API v3 &#8212; Comments: delete</a> &#8212;
+      The specific endpoint this script calls. Documents required parameters
+      (<code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">blogId</code>, <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">postId</code>, <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">commentId</code>) and the required OAuth scope.</li>
+</ul>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Rate Limits and Quotas</h3>
+<ul>
+  <li><a href="https://console.cloud.google.com/iam-admin/quotas">Google Cloud Console &#8212; Quotas</a> &#8212;
+      The live view of your project&#8217;s current quota usage and the interface for
+      requesting increases. Filter by &#8220;Blogger&#8221; to find the relevant limits.</li>
+  <li><a href="https://developers.google.com/blogger/docs/3.0/using#WorkingWithErrors">Google APIs &#8212; Handling Errors</a> &#8212;
+      The Blogger API&#8217;s error handling guide, covering 400, 401, 403, and 503
+      responses and recommended retry behavior.</li>
+  <li><a href="https://developers.google.com/analytics/devguides/reporting/core/v3/errors#backoff">Google APIs &#8212; Exponential Backoff</a> &#8212;
+      Google&#8217;s own recommendation for handling quota errors with exponential backoff.</li>
+</ul>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Python Standard Library</h3>
+<ul>
+  <li><a href="https://docs.python.org/3/library/os.html#os.getenv"><code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">os.getenv</code></a> &#8212;
+      Reads an environment variable by name, with an optional default value if the
+      variable is not set.</li>
+  <li><a href="https://docs.python.org/3/library/time.html#time.sleep"><code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">time.sleep</code></a> &#8212;
+      Pauses execution for a given number of seconds. Used here to throttle request rate.</li>
+  <li><a href="https://docs.python.org/3/library/argparse.html"><code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">argparse</code></a> &#8212;
+      The standard library module used to parse <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">--dry-run</code> and <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">--delay</code> from
+      the command line.</li>
+  <li><a href="https://docs.python.org/3/tutorial/errors.html">Exception Handling (<code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">try</code>/<code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">except</code>)</a> &#8212;
+      Python&#8217;s official tutorial on catching and handling exceptions, including the
+      pattern used in <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">api_call_with_retry</code>.</li>
+</ul>
+
+<h3 style="color:#1e1e2e;margin-top:24px;">Google Auth Libraries for Python</h3>
+<ul>
+  <li><a href="https://google-auth.readthedocs.io/en/master/">google-auth</a> &#8212;
+      The base authentication library. Handles token refresh and credential management.</li>
+  <li><a href="https://google-auth-oauthlib.readthedocs.io/en/latest/">google-auth-oauthlib</a> &#8212;
+      Provides <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">InstalledAppFlow</code>, which opens the browser for the initial OAuth
+      consent and writes <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">token.json</code>.</li>
+  <li><a href="https://googleapis.github.io/google-api-python-client/docs/">google-api-python-client</a> &#8212;
+      The client library that wraps the Blogger REST API into Python method calls like
+      <code style="background:#f0f0f0;color:#333;font-family:'Courier New',Courier,monospace;font-size:0.875em;padding:1px 5px;border-radius:3px;">service.comments().delete()</code>.</li>
+</ul>
+
+<hr/>
+
+<p>And, as always, Happy Testing!</p>
+
+<p>-T.J. Maher<br/>
+Software Engineer in Test<br/>
+<a href="https://bsky.app/profile/tjmaher1.bsky.social">BlueSky</a> |
+<a href="https://www.linkedin.com/in/tjmaher1">LinkedIn</a> |
+<a href="https://github.com/tjmaher">GitHub</a> |
+<a href="http://www.tjmaher.com/p/media.html">Articles</a></p>
+
+<p><em>Related posts from Adventures in Automation:</em></p>
+<ul>
+  <li><em><a href="https://www.tjmaher.com/2026/03/why-python-how-ai-and-python-became.html">Becoming AI QA: Why Python? How AI and Python became linked</a> (3/2026)</em></li>
+  <li><em><a href="https://www.tjmaher.com/2026/03/claude-sonnet-4-talks-about-designing.html">Claude Sonnet 4 Talks About Designing a Cypress Framework for a Login Screen</a> (3/2026)</em></li>
+  <li><em><a href="https://www.tjmaher.com/2026/02/investigating-ai-playwright-test.html">Investigating AI: Playwright-Test-Planner and Playwright-Test-Generator</a> (2/2026)</em></li>
+  <li><em><a href="https://www.tjmaher.com/p/programming-projects.html">Programming Projects</a></em></li>
+</ul>
+
+</div>
