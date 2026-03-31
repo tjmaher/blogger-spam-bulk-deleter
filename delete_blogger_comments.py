@@ -25,7 +25,7 @@ RATE LIMIT WARNING
 The default Blogger API quota is 10,000 units/day.
 Each DELETE costs 50 units  =>  max ~200 deletions/day on the default quota.
 With 11,000 comments you need to either:
-  a) Request a quota increase at console.cloud.google.com > APIs > Quotas, OR
+  a) Request a quota increase at console.cloud.google.com > IAM & Admin > Quotas, OR
   b) Run the script over multiple days (it picks up where it left off via --dry-run
      first, then live runs once quota resets).
 
@@ -39,11 +39,15 @@ Live run:
 
 Live run, slower pace (2-second delay between deletions, safer for large quotas):
     python delete_blogger_comments.py --delay 2.0
+
+Debug mode (shows detailed HTTP requests and responses):
+    python delete_blogger_comments.py --dry-run --debug
 """
 
 import argparse
 import time
 import sys
+import logging
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -64,6 +68,14 @@ TOKEN_FILE          = "token.json"
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCOPES = ["https://www.googleapis.com/auth/blogger"]
+
+# Global debug flag
+DEBUG_MODE = False
+
+def debug_log(message):
+    """Print debug messages only when debug mode is enabled."""
+    if DEBUG_MODE:
+        print(f"🔍 {message}")
 
 
 def get_credentials():
@@ -93,6 +105,7 @@ def list_all_posts(service, blog_id):
     page_token = None
     while True:
         try:
+            debug_log(f"API CALL: posts().list(blogId={blog_id}, pageToken={page_token}, maxResults=500)")
             resp = (
                 service.posts()
                 .list(
@@ -104,12 +117,19 @@ def list_all_posts(service, blog_id):
                 )
                 .execute()
             )
+            debug_log(f"API RESPONSE: Got {len(resp.get('items', []))} posts, nextPageToken={resp.get('nextPageToken')}")
         except HttpError as e:
+            http_call = f"GET https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts?pageToken={page_token}&maxResults=500&status=LIVE"
+            error_msg = f"HTTP {e.resp.status} - {e.resp.reason}"
+            debug_log(f"API ERROR: {error_msg}")
+            print(f"\n[ERROR] HTTP Call Failed:")
+            print(f"Request: {http_call}")
+            print(f"Response: {error_msg}")
             if e.resp.status == 429:
                 print(f"\n[ERROR] Daily API quota exceeded while listing posts.")
                 print(f"The Blogger API has a daily limit of 10,000 units.")
                 print(f"Please wait until tomorrow for the quota to reset, or")
-                print(f"request a quota increase at: console.cloud.google.com > APIs > Quotas")
+                print(f"request a quota increase at: console.cloud.google.com > IAM & Admin > Quotas")
                 sys.exit(1)
             else:
                 raise
@@ -126,6 +146,7 @@ def list_all_comments(service, blog_id, post_id):
     page_token = None
     while True:
         try:
+            debug_log(f"API CALL: comments().list(blogId={blog_id}, postId={post_id}, pageToken={page_token})")
             resp = (
                 service.comments()
                 .list(
@@ -138,12 +159,19 @@ def list_all_comments(service, blog_id, post_id):
                 )
                 .execute()
             )
+            debug_log(f"API RESPONSE: Got {len(resp.get('items', []))} comments, nextPageToken={resp.get('nextPageToken')}")
         except HttpError as e:
+            http_call = f"GET https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts/{post_id}/comments?pageToken={page_token}&maxResults=500&status=LIVE"
+            error_msg = f"HTTP {e.resp.status} - {e.resp.reason}"
+            debug_log(f"API ERROR: {error_msg}")
+            print(f"\n[ERROR] HTTP Call Failed:")
+            print(f"Request: {http_call}")
+            print(f"Response: {error_msg}")
             if e.resp.status == 429:
                 print(f"\n[ERROR] Daily API quota exceeded while listing comments.")
                 print(f"The Blogger API has a daily limit of 10,000 units.")
                 print(f"Please wait until tomorrow for the quota to reset, or")
-                print(f"request a quota increase at: console.cloud.google.com > APIs > Quotas")
+                print(f"request a quota increase at: console.cloud.google.com > IAM & Admin > Quotas")
                 sys.exit(1)
             else:
                 raise
@@ -160,26 +188,44 @@ def delete_comment(service, blog_id, post_id, comment_id, dry_run, delay):
     if dry_run:
         return  # nothing to do
     try:
+        debug_log(f"API CALL: comments().delete(blogId={blog_id}, postId={post_id}, commentId={comment_id})")
         service.comments().delete(
             blogId=blog_id,
             postId=post_id,
             commentId=comment_id,
         ).execute()
+        debug_log(f"API RESPONSE: Comment {comment_id} deleted successfully")
         time.sleep(delay)
     except HttpError as e:
+        http_call = f"DELETE https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts/{post_id}/comments/{comment_id}"
+        error_msg = f"HTTP {e.resp.status} - {e.resp.reason}"
+        debug_log(f"API ERROR: {error_msg}")
         if e.resp.status == 404:
+            debug_log("Comment already gone - treating as success")
             # Already gone - treat as success
             pass
         elif e.resp.status in (429, 500, 503):
             # Rate limited or transient server error - back off and retry once
-            print(f"    [WARN] HTTP {e.resp.status} - backing off 60 s then retrying...")
+            print(f"    [WARN] {error_msg} - backing off 60 s then retrying...")
+            print(f"    Failed Request: {http_call}")
             time.sleep(60)
-            service.comments().delete(
-                blogId=blog_id,
-                postId=post_id,
-                commentId=comment_id,
-            ).execute()
+            debug_log("RETRY: Attempting delete again after backoff")
+            try:
+                service.comments().delete(
+                    blogId=blog_id,
+                    postId=post_id,
+                    commentId=comment_id,
+                ).execute()
+                debug_log(f"RETRY SUCCESS: Comment {comment_id} deleted on retry")
+            except HttpError as retry_e:
+                retry_error_msg = f"HTTP {retry_e.resp.status} - {retry_e.resp.reason}"
+                print(f"    [ERROR] Retry failed: {retry_error_msg}")
+                print(f"    Failed Request: {http_call}")
+                raise retry_e
         else:
+            print(f"\n[ERROR] HTTP Call Failed:")
+            print(f"Request: {http_call}")
+            print(f"Response: {error_msg}")
             raise
 
 
@@ -198,7 +244,24 @@ def main():
         default=0.5,
         help="Seconds to sleep between each DELETE request (default: 0.5).",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show detailed HTTP requests and responses for debugging.",
+    )
     args = parser.parse_args()
+
+    # Enable HTTP debugging if requested
+    if args.debug:
+        global DEBUG_MODE
+        DEBUG_MODE = True
+        import httplib2
+        httplib2.debuglevel = 1
+        logging.basicConfig(level=logging.DEBUG)
+        requests_log = logging.getLogger("requests.packages.urllib3")
+        requests_log.setLevel(logging.DEBUG)
+        requests_log.propagate = True
+        print("🔍 HTTP debugging enabled - showing all API requests/responses\n")
 
     if YOUR_BLOG_ID == "PASTE_YOUR_BLOG_ID_HERE":
         print("ERROR: Set YOUR_BLOG_ID in the script before running.")

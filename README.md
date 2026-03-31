@@ -248,11 +248,67 @@ At that rate, 11,000 comments would take approximately 55 days.
 
 To avoid this, request a quota increase at:
 
-> console.cloud.google.com > APIs & Services > Blogger API v3 > Quotas
+> console.cloud.google.com > IAM & Admin > Quotas
 
 Google typically approves increases for clearly legitimate use cases. With
 an approved higher quota and the default 0.5-second delay, a full 11,000-
 comment run completes in well under an hour.
+
+---
+
+## Error Handling and Debugging
+
+The script provides detailed error information when API calls fail, showing both the HTTP request that was attempted and the response received from Google's servers.
+
+### Debug Mode
+
+Enable detailed HTTP debugging with the `--debug` flag:
+
+```bash
+python delete_blogger_comments.py --dry-run --debug
+```
+
+This shows all HTTP requests and responses, including headers and timing information.
+
+### HTTP Call Failure Reporting
+
+When an API call fails, the script displays:
+- **Request**: The exact HTTP method and URL that was attempted
+- **Response**: The HTTP status code and error message returned by the server
+
+#### Example Error Output
+
+```
+[ERROR] HTTP Call Failed:
+Request: DELETE https://www.googleapis.com/blogger/v3/blogs/12345/posts/67890/comments/11111  
+Response: HTTP 403 - Forbidden
+```
+
+#### Common Error Scenarios
+
+| Status Code | Meaning | Action |
+|---|---|---|
+| `403 Forbidden` | Insufficient permissions or OAuth scope issues | Check OAuth consent screen configuration and ensure blogger scope is granted |
+| `404 Not Found` | Comment already deleted or doesn't exist | Script treats this as success and continues |
+| `429 Too Many Requests` | Rate limit exceeded | Script automatically retries after backoff period |
+| `500/503 Server Error` | Temporary Google server issues | Script retries once after 60-second delay |
+
+#### Retry Logic
+
+For rate limits (`429`) and server errors (`500`/`503`), the script:
+1. Shows the failed request details
+2. Waits 60 seconds
+3. Attempts the same request once more
+4. If the retry also fails, shows both the original and retry error details
+
+Example retry output:
+```
+[WARN] HTTP 429 - Too Many Requests - backing off 60 s then retrying...
+Failed Request: DELETE https://www.googleapis.com/blogger/v3/blogs/12345/posts/67890/comments/11111
+
+[ERROR] Retry failed: HTTP 429 - Too Many Requests
+Failed Request: DELETE https://www.googleapis.com/blogger/v3/blogs/12345/posts/67890/comments/11111
+```
 
 ---
 
