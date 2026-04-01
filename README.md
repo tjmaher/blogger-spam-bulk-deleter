@@ -56,7 +56,7 @@ Set up a free Google Cloud project to get API access:
 1. Go to the [Google Cloud Console](https://console.cloud.google.com) and create a new project (or reuse an existing one)
 2. Enable the **Blogger API v3**: [console.cloud.google.com/apis/library/blogger.googleapis.com](https://console.cloud.google.com/apis/library/blogger.googleapis.com)
 
-### OAuth 2.0 Credentials (The Keys to Your Kingdom)
+### OAuth 2.0 Credentials
 
 1. Navigate to **APIs & Services > Credentials**.
 2. Click **+ Create Credentials > OAuth 2.0 Client ID**.
@@ -81,7 +81,7 @@ Set up a free Google Cloud project to get API access:
 
 The `client_id` and `client_secret` values will be unique to your project. Don't share this file or commit it to version control - treat it like a password that identifies your specific application to Google's servers.
 
-### OAuth Consent Screen (Telling Google What You're Up To)
+### OAuth Consent Screen
 
 Configure the consent screen that users see when logging in. Go to **APIs & Services > OAuth consent screen**:
 
@@ -98,7 +98,7 @@ Configure the consent screen that users see when logging in. Go to **APIs & Serv
 
 Leave the app in **Testing** status. Google verification is only required when the app will be used by people outside the test users list. Since you're the only one running this script, Testing status works indefinitely.
 
-### Finding Your Blog ID (One More Quick Step)
+### Finding Your Blog ID
 
 Create an API key at **APIs & Services > Credentials > + Create Credentials > API key**. Restrict it to the Blogger API v3 only for security. Then call this URL in your browser (replacing the placeholders with your actual values):
 
@@ -352,7 +352,6 @@ Remember, although Claude speaks with the Voice of Authority, Claude is not an a
 - Claude is so eager to please, it will fabricate an answer when it can not come up with one.
 
 Review its answers. Be skeptical. Use critical thinking. Ask it to cite its sources.
-
 
 
 **Essential practices when using Claude, According to Claude:**
