@@ -195,7 +195,7 @@ covers the full signature.
 
 ---
 
-## First Run - The Authentication Dance
+## First Run - Authentication
 
 The first time the script runs, it opens a browser window to Google's login page. After you log in and grant the Blogger scope, Google redirects back to the local server the script is running and you'll see:
 
