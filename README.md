@@ -8,6 +8,8 @@ So, now I have a Python project that works somehow, one I don't really understan
 
 Python, I haven't touched since grad school, which is a shame, since that seems to be a big gap on the old resume when it comes to the AI QA positions I've just started looking into.
 
+- **Related Blog Posts**: [When Claude Acts Like a Clod: Catching AI Fabrications: A QA Engineer's Field Notes](https://www.tjmaher.com/2026/03/how-ive-detected-claudes-fabrications.html)
+
 ---
 
 ## About the Author
