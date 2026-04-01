@@ -1,64 +1,89 @@
-# Blogger Comment Deleter
+# Blogger Spam Bulk Deleter
 
-A Python script that deletes all comments from a Blogger blog using the
-[Blogger API v3](https://developers.google.com/blogger/docs/3.0/reference).
+**The Problem:** My blog, [Adventures in Automation](https://www.tjmaher.com), collected over 11,000 spam comments over the past ten years, and unfortunately bare-bones Blogger.com does not have a bulk delete function. Through the Blogger UI, you can only delete a hundred at a time.
 
-This script was written with the assistance of **Claude** (claude.ai), Anthropic's AI assistant. Claude provided suggessions for the OAuth flow, debugged the API errors encountered during development, and improved the retry and rate-limit handling based on live error output.
+**The Solution:** Pair-programming with Claude.ai, we whipped up a quick Python script to get around this using the [Blogger API v3](https://developers.google.com/blogger/docs/3.0/reference), Google OAuth libraries, and some Google API Clients. The errors that appeared after running the code, I fed back to Claude, who then fixed the issues, and added some setup documentation I was able to muddle through.
+
+So, now I have a Python project that works somehow, one I don't really understand. Since becoming an automation developer, I have worked on-the-job with Java, Ruby, JavaScript, and TypeScript, but not yet with Python.
+
+Python, I haven't touched since grad school, which is a shame, since that seems to be a big gap on the old resume when it comes to the AI QA positions I've just started looking into.
 
 ---
 
-## Background
+## About the Author
 
-**T.J. Maher** (Thomas F. Maher Jr.) is a Software Development Engineer in Test (SDET) and QA Automation Engineer based in Bridgewater, MA. His core stack has been for the last ten years Java, Ruby, JavaScript, and TypeScript, but not Python. To fix this, T.J. is in the process of writing a very detailed code walkthrough on his blog, [Adventures in Automation](https://www.tjmaher.com).  
+Greetings! I'm **T.J. Maher** (Thomas F. Maher Jr.), a Software Development Engineer in Test (SDET) and QA Automation Engineer based in Boston. To better understand Python, I've been writing a detailed code walkthrough on my blog about this project Claude and I have cobbled together as part of my Python learning journey.
 
-T.J is also the author of the Test Automation University course
-[Introduction to Capybara](https://testautomationu.applitools.com/capybara-ruby/)
-and a contributing author to
-[Continuous Testing for DevOps Professionals](https://www.amazon.com/dp/1789953847)
-(Packt, 2019).
-
+**Find me on:**
 - **LinkedIn:** [linkedin.com/in/tjmaher1](https://www.linkedin.com/in/tjmaher1)
 - **GitHub:** [github.com/tjmaher](https://github.com/tjmaher)
 - **BlueSky:** [@tjmaher1](https://bsky.app/profile/tjmaher1.bsky.social)
 
-[Adventures in Automation](https://www.tjmaher.com) is T.J.'s software testing blog, running since 2015, documents his career arc from manual QA through test automation, and currently looking into AI-assisted quality engineering.
-
-Over the past ten years his blog accumulated roughly 11,000 spam comments that needed to be cleared out in bulk. The Blogger web UI has no bulk-delete feature.
-
-This project handles that problem. 
+[Adventures in Automation](https://www.tjmaher.com) documents my career arc from manual QA through test automation, and I'm currently looking into AI-assisted quality engineering. 
 
 ---
 
-## Prerequisites
+## Getting Started
 
-### 1. Python
+This project expects Python 3.8 or later. It was tested on Python 3.14 on Windows.
 
-Python 3.8 or later. Tested on Python 3.14 on Windows.
+**About Python:**
+- **Official Website**: [python.org](https://www.python.org/)
+- **Windows Installer**: [python.org/downloads/windows](https://www.python.org/downloads/windows/)
+- **Documentation**: [docs.python.org/3](https://docs.python.org/3/)
+- **Tutorial**: [docs.python.org/3/tutorial](https://docs.python.org/3/tutorial/index.html)
 
-### 2. Dependencies
+### Install Dependencies
+
+Install the required packages using Python's Package Installer (pip), which fetches packages from the Python Package Index (PyPI):
 
 ```bash
 pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib python-dotenv
 ```
 
-### 3. Google Cloud Project
+**What these packages do:**
+- **google-api-python-client**: The official Google client library for Python that provides access to Google's REST APIs, including the Blogger API v3
+- **google-auth-httplib2**: Adapter that connects Google's authentication library to httplib2, the HTTP client used by the API client
+- **google-auth-oauthlib**: Handles the OAuth 2.0 authorization flow - opens a browser window for the first-time login, manages tokens automatically afterwards
+- **python-dotenv**: Loads environment variables from a `.env` file to keep sensitive values out of your source code
 
-1. Go to the [Google Cloud Console](https://console.cloud.google.com) and
-   create a new project (or reuse an existing one).
-2. Enable the **Blogger API v3**:
-   [console.cloud.google.com/apis/library/blogger.googleapis.com](https://console.cloud.google.com/apis/library/blogger.googleapis.com)
+As Claude noted: "google-api-python-client makes the API calls, google-auth-oauthlib + google-auth-httplib2 handle authenticating as your Google account, and python-dotenv keeps your OAuth credentials out of the script itself".
 
-### 4. OAuth 2.0 Credentials
+### Google Cloud Setup
+
+Set up a free Google Cloud project to get API access:
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com) and create a new project (or reuse an existing one)
+2. Enable the **Blogger API v3**: [console.cloud.google.com/apis/library/blogger.googleapis.com](https://console.cloud.google.com/apis/library/blogger.googleapis.com)
+
+### OAuth 2.0 Credentials (The Keys to Your Kingdom)
 
 1. Navigate to **APIs & Services > Credentials**.
 2. Click **+ Create Credentials > OAuth 2.0 Client ID**.
 3. Choose **Desktop app** as the application type.
-4. Download the generated JSON file and rename it to `client_secrets.json`.
-5. Place `client_secrets.json` in the same directory as the script.
+4. Download the generated JSON file and rename it to `client_secrets.json`
+5. Place `client_secrets.json` in the same directory as the script
 
-### 5. OAuth Consent Screen
+**Example of what the JSON structure looks like:**
+```json
+{
+  "installed": {
+    "client_id": "1234.apps.googleusercontent.com",
+    "project_id": "maps-api-project-1234",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_secret": "ABC123",
+    "redirect_uris": ["http://localhost"]
+  }
+}
+```
 
-Configure the consent screen at **APIs & Services > OAuth consent screen**:
+The `client_id` and `client_secret` values will be unique to your project. Don't share this file or commit it to version control - treat it like a password that identifies your specific application to Google's servers.
+
+### OAuth Consent Screen (Telling Google What You're Up To)
+
+Configure the consent screen that users see when logging in. Go to **APIs & Services > OAuth consent screen**:
 
 | Field | Value |
 |---|---|
@@ -71,34 +96,27 @@ Configure the consent screen at **APIs & Services > OAuth consent screen**:
 | Test users | your Gmail address |
 | Publishing status | Testing (no verification needed) |
 
-Leave the app in **Testing** status. Google verification is only required
-when the app will be used by people outside the test users list.
+Leave the app in **Testing** status. Google verification is only required when the app will be used by people outside the test users list. Since you're the only one running this script, Testing status works indefinitely.
 
-### 6. Your Blog ID
+### Finding Your Blog ID (One More Quick Step)
 
-Create an API key at **APIs & Services > Credentials > + Create Credentials > API key**.
-Restrict it to the Blogger API v3 only. Then call this URL in your browser:
+Create an API key at **APIs & Services > Credentials > + Create Credentials > API key**. Restrict it to the Blogger API v3 only for security. Then call this URL in your browser (replacing the placeholders with your actual values):
 
 ```
 https://www.googleapis.com/blogger/v3/blogs/byurl?url=https://YOUR-BLOG-URL&key=YOUR_API_KEY
 ```
 
-The `id` field in the returned JSON is your Blog ID. You will store it in
-your `.env` file in the next step.
+The `id` field in the returned JSON is your Blog ID. You'll store this in your `.env` file in the next step.
 
 ---
 
-## Keeping Secrets Out of GitHub
+## How To Keep Secrets Out of GitHub
 
-> **Why this matters:** Credentials committed to a public GitHub repository
-> are exposed to anyone on the internet. Automated bots scan GitHub
-> continuously for API keys, OAuth secrets, and tokens. A leaked credential
-> can be used to make API calls on your behalf, exhaust your quotas, or
-> access your account data. GitHub's own documentation warns that
-> [once a secret is pushed, it should be considered compromised](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning),
-> even if you delete it immediately, because the git history retains it.
+> **Why this matters:** Credentials committed to a public GitHub repository are exposed to anyone on the internet. Automated bots scan GitHub continuously for API keys, OAuth secrets, and tokens. A leaked credential can be used to make API calls on your behalf, exhaust your quotas, or access your account data. GitHub's own documentation warns that once a secret is pushed, it should be considered compromised, even if you delete it immediately, because the git history retains it.
 
-This project uses three files that must never be committed:
+- GitHub Docs / Code Security / Secret Scanning: (https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning)
+
+Secrets, Tokens, and Environment variables must never be committed to GitHub.
 
 | File | Why it is sensitive |
 |---|---|
@@ -106,14 +124,11 @@ This project uses three files that must never be committed:
 | `token.json` | Written automatically after first authentication. Contains your OAuth access and refresh tokens, which grant direct access to your Blogger account. |
 | `.env` | Contains your Blog ID and file paths. Less sensitive than the above, but keeping all configuration out of source control is the correct habit. |
 
-The industry standard approach for managing this kind of configuration is
-the **twelve-factor app** methodology, which states that
-[config should be stored in the environment](https://12factor.net/config),
-strictly separated from code. The `python-dotenv` library
-([pypi.org/project/python-dotenv](https://pypi.org/project/python-dotenv/))
-implements this pattern for local development by loading values from a
-`.env` file into environment variables at runtime, so the script reads
-them without them ever being hardcoded in source.
+The industry standard approach for managing this kind of configuration, according to Claude, is the **twelve-factor app** methodology, which states that [config should be stored in the environment](https://12factor.net/config), strictly separated from code.
+
+**Sidenote:** Originally created by Heroku (2011), it's been adopted by cloud platforms (AWS, Google Cloud, Azure), major tech companies (Netflix, Spotify, Uber), and enterprise software providers (Salesforce, GitHub). It focuses on deployment and configuration practices rather than language-specific syntax.
+
+The `python-dotenv` library ([pypi.org/project/python-dotenv](https://pypi.org/project/python-dotenv/)) implements this pattern for local development by loading values from a `.env` file into environment variables at runtime, so the script reads them without them ever being hardcoded in source.
 
 ### Step 1 - Create a `.env` file
 
@@ -124,9 +139,8 @@ BLOG_ID=your_blog_id_here
 CLIENT_SECRETS_FILE=client_secrets.json
 ```
 
-No quotes around the values. No spaces around the `=` sign.
 
-### Step 2 - Create a `.gitignore` file
+### Step 2 - Create a `.gitignore` file (Your Safety Net)
 
 In the same folder, create a file named `.gitignore`:
 
@@ -136,13 +150,7 @@ client_secrets.json
 token.json
 ```
 
-Git reads `.gitignore` before staging files and silently excludes anything
-listed there. This is the standard mechanism for keeping secrets out of
-repositories. GitHub maintains a
-[collection of recommended `.gitignore` templates](https://github.com/github/gitignore)
-for common languages and frameworks. The
-[Python template](https://github.com/github/gitignore/blob/main/Python.gitignore)
-is a useful reference for any Python project.
+Git reads `.gitignore` before staging files and silently excludes anything listed there. This is the standard mechanism for keeping secrets out of repositories. GitHub maintains a [collection of recommended `.gitignore` templates](https://github.com/github/gitignore) for common languages and frameworks. The [Python template](https://github.com/github/gitignore/blob/main/Python.gitignore) is a useful starting point for any Python project and represents community consensus on what Python files should never be committed (virtual environments, `__pycache__` directories, `.pyc` files, etc.).
 
 > **Before your first commit**, run `git status` and confirm that `.env`,
 > `client_secrets.json`, and `token.json` do not appear in the list of
@@ -159,7 +167,6 @@ BLOG_ID=your_blog_id_here
 CLIENT_SECRETS_FILE=client_secrets.json
 ```
 
-The `.env.example` convention is widely used across open source projects.
 The [python-dotenv documentation](https://saurabh-kumar.com/python-dotenv/#file-format)
 recommends this pattern explicitly. It serves as both documentation and a
 template that contributors can copy directly to create their own `.env`.
@@ -188,11 +195,9 @@ covers the full signature.
 
 ---
 
-## First Run - Authentication
+## First Run - The Authentication Dance
 
-The first time the script runs it opens a browser window to Google's login
-page. After you log in and grant the Blogger scope, Google redirects back
-to the local server the script is running and you will see:
+The first time the script runs, it opens a browser window to Google's login page. After you log in and grant the Blogger scope, Google redirects back to the local server the script is running and you'll see:
 
 ```
 The authentication flow has completed. You may close this window.
@@ -232,33 +237,22 @@ per-minute quota limits during large runs.
 
 ---
 
-## Rate Limits
+## Rate Limits and What to Expect
 
 The Blogger API v3 has two quota constraints to be aware of.
 
-**Per-minute limit** applies to all API calls including list operations.
-The script handles this automatically: every list call has a 0.5-second
-pause after it completes, and both list and delete operations use
-exponential backoff (5s, 10s, 20s... up to 120s) with up to 6 retries on
-HTTP 429 and 5xx responses.
+**Per-minute limits** apply to all API calls including list operations. The script handles this automatically: every list call has a 0.5-second pause after it completes, and both list and delete operations use exponential backoff (5s, 10s, 20s… up to 120s) with up to 6 retries on HTTP 429 and 5xx responses. This follows Google's official recommendation for [exponential backoff algorithms](https://developers.google.com/workspace/drive/api/guides/limits#exponential), which state that when you receive HTTP 403 or 429 responses, you should retry using exponentially increasing wait times.
 
-**Daily quota** is 10,000 units per day by default. Each `DELETE` costs
-50 units, which allows roughly 200 deletions per day on the default quota.
-At that rate, 11,000 comments would take approximately 55 days.
+**Daily quotas** vary by project and can be viewed in your [Google Cloud Console → APIs & Services → Blogger API v3 → Quotas](https://console.cloud.google.com/iam-admin/quotas). The default limits are typically sufficient for small-scale personal use, but large-scale comment deletion may require requesting quota increases through the console. Google's [quota documentation](https://developers.google.com/workspace/drive/api/guides/limits#increase) confirms that "not all projects have the same quotas" and that quota values can be increased based on resource usage patterns.
 
-To avoid this, request a quota increase at:
+**Performance expectations**: The actual deletion speed depends on your quota allocation, the 0.5-second default delay between operations, and API response times. For large comment volumes, expect the process to take multiple sessions across several days unless you have increased quotas.
 
-> console.cloud.google.com > IAM & Admin > Quotas
-
-Google typically approves increases for clearly legitimate use cases. With
-an approved higher quota and the default 0.5-second delay, a full 11,000-
-comment run completes in well under an hour.
 
 ---
 
 ## Error Handling and Debugging
 
-The script provides detailed error information when API calls fail, showing both the HTTP request that was attempted and the response received from Google's servers.
+The script provides detailed error information when API calls fail, showing both the HTTP request that was attempted and the response received from Google's servers. This helps you understand exactly what's happening under the hood.
 
 ### Debug Mode
 
@@ -348,16 +342,30 @@ Blogger comment deleter/
 
 ## About Claude
 
-[Claude](https://claude.ai) is an AI assistant made by
-[Anthropic](https://www.anthropic.com). It can read and write code, debug
-errors, explain APIs, draft documentation, and work iteratively with you
-as a development partner. This project is a practical example of that
-workflow: a working Python script built from scratch through a back-and-
-forth conversation, with each error pasted back into the chat and resolved
-in the next reply.
+Claude says: "[Claude](https://claude.ai) is an AI assistant made by [Anthropic](https://www.anthropic.com). It can read and write code, debug errors, explain APIs, draft documentation, and work iteratively with you as a development partner. 
 
-If you want to explore what Claude can do for your own testing and
-automation work, the starting point is [claude.ai](https://claude.ai).
+"This project is a practical example of that workflow: a working Python script built from scratch through a back-and-forth conversation, with each error pasted back into the chat and resolved in the next reply. When I hit roadblocks or got cryptic error messages, I'd copy-paste them to Claude, who would then suggest fixes - often improving the code's robustness in the process".
+
+Remember, although Claude speaks with the Voice of Authority, Claude is not an authority.
+- Looking for technical information? Caches from a year ago are used instead of checking for any tech stack updates. 
+- Need AI to recheck a web page after editing it with AI's suggestions? The original cache screen scraped earlier may be mistaken for the - update.
+- Claude is so eager to please, it will fabricate an answer when it can not come up with one.
+
+Review its answers. Be skeptical. Use critical thinking. Ask it to cite its sources.
+
+
+
+**Essential practices when using Claude, According to Claude:**
+- **Verify specific technical claims** against official documentation
+- **Ask for sources** when Claude provides detailed specifications  
+- **Stay skeptical** when something sounds too precise or authoritative
+- **Check official APIs** rather than trusting Claude's technical details
+- **Document corrections** so Claude can learn from its mistakes
+
+"If you want to explore what Claude can do for your own testing and automation work, the starting point is [claude.ai](https://claude.ai). Just remember to always verify technical claims and check official documentation - even AI assistants can make mistakes!"
+
+**Related reading:**
+- [How I've Detected Claude's Fabrications and How I've Handled Them](https://www.tjmaher.com/2026/03/how-ive-detected-claudes-fabrications.html) - My experience catching and correcting AI fabrications during this project
 
 ---
 
@@ -398,3 +406,17 @@ automation work, the starting point is [claude.ai](https://claude.ai).
 - [google-auth](https://google-auth.readthedocs.io/en/master/) - The base authentication library. Handles token refresh and credential management.
 - [google-auth-oauthlib](https://google-auth-oauthlib.readthedocs.io/en/latest/) - Provides `InstalledAppFlow`, which opens the browser for the initial OAuth consent and writes `token.json`.
 - [google-api-python-client](https://googleapis.github.io/google-api-python-client/docs/) - The client library that wraps the Blogger REST API into Python method calls like `service.comments().delete()`.
+
+---
+
+## Wrapping Up
+
+Claude says, "Whether you're dealing with your own spam comment problem or just curious about Python API development, I hope this project gives you some useful insights. For me, it was a great way to get my hands dirty with Python again and see how modern development workflows can incorporate AI assistance.
+
+"The combination of Google's well-documented APIs, Python's excellent HTTP libraries, and careful defensive programming creates a tool that's both powerful and safe to use - exactly what you want when dealing with bulk operations on your precious blog content".
+
+Happy testing!
+
+-T.J. Maher  
+Software Engineer in Test  
+[BlueSky](https://bsky.app/profile/tjmaher1.bsky.social) | [LinkedIn](https://www.linkedin.com/in/tjmaher1) | [GitHub](https://github.com/tjmaher) | [Blog](https://www.tjmaher.com)
